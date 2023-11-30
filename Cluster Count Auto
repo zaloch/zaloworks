@@ -1,0 +1,305 @@
+import java.io
+from ij import IJ, WindowManager, Prefs
+from ij.gui import GenericDialog, Roi, OvalRoi
+from ij.plugin.frame import RoiManager
+from ij.measure import ResultsTable
+from ij.gui import WaitForUserDialog
+from java.util import Calendar
+from java.awt import Color
+import os
+import sys
+
+def main():
+	# Main part of the script
+	gd = GenericDialog("Islet Measurements")
+	gd.addMessage("Single Image")
+	gd.addFileField("Browse for single image file", "")
+	gd.addMessage("____________________________________________")
+	gd.addMessage("Batch Mode")
+	gd.addDirectoryField("Browse for folder", "")
+	gd.addMessage("____________________________________________")
+	gd.addMessage("Export Directory")
+	gd.addDirectoryField("Browse for folder", "")
+	gd.addMessage("____________________________________________")
+	gd.addMessage("Format Settings")
+	gd.addChoice("Input image format", ["tif", "png", "jpeg", "bmp"], "tif")
+	gd.addChoice("Output image format", ["png", "jpeg", "bmp"], "png")
+	gd.addMessage("Scale Settings")
+	gd.addNumericField("Distance:", 2885)
+	gd.addNumericField("Known:", 10000)
+	gd.addStringField("Unit:", "um")
+	gd.addMessage("____________________________________________")
+	gd.showDialog()
+	
+	return gd
+
+def validate_image_format(img_path, input_format):
+	if not img_path.endswith(input_format):
+		IJ.showMessage("Error: Image '" + img_path + "' does not match the input format '" + input_format + "'")
+		return False
+	return True
+	
+def validate_directory(path):
+	if not os.path.exists(path):
+		IJ.showMessage("Error: Directory '" + path + "' does not exist")
+		return False
+	return True
+
+def create_directory(path):
+    directory = os.path.abspath(path)
+    if not os.path.exists(directory):
+        os.makedirs(directory)
+    return directory
+    
+def close_all_images():
+    # Get the IDs of all open images
+    ids = WindowManager.getIDList()
+
+    # Close all open images
+    for id in ids:
+        imp = WindowManager.getImage(id)
+        if imp is not None:
+            imp.close()
+
+def close_clear_roi_manager():
+    # Get the instance of the ROI Manager
+    roi_manager = RoiManager.getInstance()
+    
+    # If the ROI Manager is open, reset it
+    if roi_manager is not None:
+		roi_manager.reset()
+		roi_manager.close()
+
+def show_done_dialog():
+    gd = GenericDialog("All done")
+    gd.addMessage("Processing is complete!")
+    gd.showDialog()
+		
+def close_results():
+    # Get the ResultsTable
+    results_table = ResultsTable.getResultsTable()
+
+    # If the ResultsTable is open, reset it
+    if results_table is not None:
+        results_table.reset()
+
+    # Close the "Results" and "Summary" windows
+    WindowManager.getWindow("Results").close()
+    
+def close_summary():
+    # Get the Summary window
+    summary_window = WindowManager.getWindow("Summary")
+    # If the Summary window is open, save the summary table and then close it
+    if summary_window is not None:
+        summary_window.close()
+
+def save_data(analysis_dir, table):
+	# Save the summary table to a file
+	results_table = ResultsTable.getResultsTable(table)
+	results_table.save(os.path.join(analysis_dir, table + "_data.csv"))  
+    	  	
+def clear_results_table():
+    # Get the ResultsTable
+    results_table = ResultsTable.getResultsTable()
+
+    # If the ResultsTable is open, reset it
+    if results_table is not None:
+    	results_table.reset()
+        
+def save_overlay(image):
+	# Save a copy of the original image with the ROIs obtained by the analysis
+    image = WindowManager.getImage(image)
+    iamge.setOverlay(imp.getOverlay())
+    
+    IJ.saveAs(imp_original, output_format.upper(), os.path.join(overlaydir, masktitle + output_format))        
+    
+def get_datetime():
+	cal = Calendar.getInstance()
+	year = cal.get(Calendar.YEAR)
+	month = cal.get(Calendar.MONTH) + 1  # Months are indexed from 0 in java Calendar	
+	dayOfWeek = cal.get(Calendar.DAY_OF_WEEK) - 1  # Days of week are indexed from 1 in java Calendar
+	dayOfMonth = cal.get(Calendar.DAY_OF_MONTH)
+	return year, month, dayOfWeek, dayOfMonth
+
+def create_roi(image):	
+    # Open an image
+    imp = image
+    imp.show()
+
+    # Create an initial ROI
+    roi = OvalRoi(600, 600, 4000, 4000)
+    imp.setRoi(roi)
+
+    # Create a dialog with a message
+    dialog = WaitForUserDialog("Adjust your ROI", "Adjust your ROI and click OK.")
+    dialog.show()
+
+    # Once the user clicks OK, get the ROI from the image
+    bounds = imp.getRoi().getBounds()
+   	
+   	# Compute the center and radius of the oval
+    center_x = bounds.x + bounds.width / 2
+    center_y = bounds.y + bounds.height / 2
+    radius = bounds.width / 2
+    
+    close_all_images()
+    
+    # Return these as a dictionary
+    return {'center_x': center_x, 'center_y': center_y, 'radius': radius}
+
+def process_images(images, input_format, output_format, mask_dir, analysis_dir, object_data, roi_dir, overlaydir, oval_params, distance, known, unit):
+    for i,img in enumerate(images):
+        
+        if len(images) > 1 and not validate_image_format(img, input_format):
+            continue
+        #if batch processing, use input format
+        if len(images) > 1 and not img.endswith(input_format):
+            continue  
+       	
+        IJ.open(img)
+        IJ.run("Select None")
+        currentimage_title = WindowManager.getCurrentImage().getTitle()
+        
+        IJ.run("Duplicate...", "title="+currentimage_title)
+        IJ.run("8-bit")
+        imp = IJ.getImage()
+        Prefs.blackBackground = False
+        IJ.setAutoThreshold(imp, "Default")
+        
+        if oval_params is not None:
+        	roi = OvalRoi(oval_params['center_x'] - oval_params['radius'], oval_params['center_y'] - oval_params['radius'], 2 * oval_params['radius'], 2 * oval_params['radius'])
+        	imp.setRoi(roi)        
+	
+		roi_manager = RoiManager.getInstance()
+        if roi_manager is None:
+            roi_manager = RoiManager()
+        roi_manager.addRoi(imp.getRoi())
+        roi_manager.runCommand("Save", os.path.join(analysis_dir, "analysis.roi")) 
+    	
+    	# Select and display the 0th ROI
+        roi_manager.select(imp, 0)
+    	IJ.run("Clear Outside")	    		        	        	        	            		        	        	        	            		        	        	       	        	        	        	            		        	        	        	        
+        IJ.run("Median...", "radius=5")
+        IJ.run("Convert to Mask")
+        
+        IJ.saveAs(imp, "BMP", os.path.join(mask_dir, currentimage_title))
+        IJ.run("Erode")
+        IJ.run("Watershed")
+        IJ.run("Set Scale...", "distance=" + distance + " known=" + known + " unit=" + unit)
+        IJ.run("Set Measurements...", "area mean standard min centroid perimeter fit shape feret's integrated kurtosis limit redirect=None decimal=3")
+        
+        if oval_params is not None:
+        	roi = OvalRoi(oval_params['center_x'] - oval_params['radius'], oval_params['center_y'] - oval_params['radius'], 2 * oval_params['radius'], 2 * oval_params['radius'])
+        	imp.setRoi(roi)
+        	
+        roi_manager = RoiManager.getInstance()
+        
+        if roi_manager is None:
+            roi_manager = RoiManager()
+        roi_manager.addRoi(imp.getRoi())
+        
+		# Select and display the 0th ROI
+        roi_manager.select(imp, 0)
+        
+        IJ.run("Analyze Particles...", "size=300-6000 pixel circularity=0.35-1.00 show=Overlay display clear summarize overlay add")
+        roi_manager.runCommand("Measure")
+        
+        results_table = ResultsTable.getResultsTable()
+        results_table.save(os.path.join(object_data, currentimage_title + "_object_data.csv"))
+        
+        roi_manager.runCommand("Show All")
+        
+        roi_manager.runCommand("Save", os.path.join(roi_dir, currentimage_title + "_RoiSet.zip"))
+        
+        for i in range(roi_manager.getCount()):
+            roi = roi_manager.getRoi(i)
+            roi.setStrokeWidth(5)
+            roi.setStrokeColor(Color.red)
+            roi_manager.select(i)
+            
+        IJ.run("Flatten")
+        
+        masktitle = currentimage_title[:currentimage_title.rfind(".")]
+        
+        IJ.saveAs(imp, output_format.upper(), os.path.join(overlaydir, masktitle + "_binary" + output_format))
+        
+        # Set the stroke width and color of the overlay to red and thicke
+        overlay = imp.getOverlay()
+        
+        # Show the overlay on the original image
+        imp_original = WindowManager.getImage(currentimage_title)
+        
+        IJ.selectWindow(currentimage_title)
+        
+        for i in range(roi_manager.getCount()):
+			roi = roi_manager.getRoi(i)
+			roi.setStrokeWidth(5)
+			roi.setStrokeColor(Color.red)
+			roi_manager.select(i)
+			
+        roi_manager.runCommand("Show All with labels")
+        # Flatten the image
+        imp_flattened = imp_original.flatten()
+		
+		# Save a copy of the original image with the ROIs obtained by the analysis
+        IJ.saveAs(imp_flattened, output_format.upper(), os.path.join(overlaydir, masktitle + output_format))
+        close_all_images()
+        close_clear_roi_manager()
+        clear_results_table()
+        close_results()
+
+gd = main()
+
+#set io vars
+singlefile = str(gd.getNextString())
+batchdir = str(gd.getNextString())
+exportdir = str(gd.getNextString())
+distance = str(gd.getNextNumber())
+known = str(gd.getNextNumber())
+unit = str(gd.getNextString())
+
+singlefile_dir = os.path.dirname(singlefile)
+
+input_format = "." + gd.getNextChoice()
+output_format = "." + gd.getNextChoice()
+
+if singlefile != "":
+	images = [singlefile]
+	project_path = singlefile_dir
+	project_name = os.path.basename(singlefile_dir)
+	imgdir = singlefile
+elif batchdir != "":
+    if not validate_directory(batchdir):
+        sys.exit(1)
+    images = list(map(lambda f: os.path.join(batchdir, f), os.listdir(batchdir)))
+    images = [x for x in images if x.endswith(input_format)]
+    if not images:
+    	IJ.showMessage("Error: No images found in the directory '" + batchdir + "' with the input format '" + input_format + "'")
+    	sys.exit(1)
+    project_path = os.path.dirname(batchdir)
+    project_name = os.path.basename(batchdir)
+    imgdir = batchdir
+    
+if exportdir == "":
+    if singlefile != "":
+        exportdir = os.path.dirname(os.path.dirname(singlefile))  # Use the parent directory of the single image file
+    elif batchdir != "":
+        exportdir = os.path.dirname(batchdir)  # Use the batch directory
+
+year, month, dayOfWeek, dayOfMonth = get_datetime()
+
+analysis_top = create_directory(os.path.join(exportdir, project_name))
+analysis_dir = create_directory(os.path.join(analysis_top + " analysis_{}_{}_{}".format(year, month, dayOfMonth)))
+roi_dir = create_directory(os.path.join(analysis_dir, "ROIs"))
+object_data = create_directory(os.path.join(analysis_dir, "object_data"))
+mask_dir = create_directory(os.path.join(analysis_dir, "maskdir"))
+overlaydir = create_directory(os.path.join(analysis_dir, "overlay"))
+
+oval_params = create_roi(image = IJ.openImage(images[0]))
+
+process_images(images, input_format, output_format, mask_dir, analysis_dir, object_data, roi_dir, overlaydir, oval_params, distance, known, unit)
+
+save_data(analysis_dir, "Summary")
+
+close_summary()
+show_done_dialog()
